@@ -1,35 +1,31 @@
 import {
     Map,
-    MapTileLayer,
+    MapControls,
     MapDrawControl,
-    MapDrawMarker,
-    MapDrawPolyline,
-    MapDrawCircle,
-    MapDrawRectangle,
+    MapDrawPoint,
+    MapDrawLine,
     MapDrawPolygon,
-    MapDrawEdit,
+    MapDrawRectangle,
+    MapDrawCircle,
+    MapDrawSelect,
     MapDrawDelete,
-    MapDrawUndo,
-    MapZoomControl,
-    MapFullscreenControl,
+    MapDrawDownload,
 } from "@/components/ui/map"
 
 export function App() {
     return (
         <div className="h-screen w-screen">
-            <Map center={[39.7684, -86.1581]} zoom={13} className="h-full w-full rounded-none">
-                <MapTileLayer />
-                <MapZoomControl />
-                <MapFullscreenControl />
-                <MapDrawControl>
-                    <MapDrawMarker />
-                    <MapDrawPolyline />
-                    <MapDrawCircle />
-                    <MapDrawRectangle />
+            <Map center={[-86.1581, 39.7684]} zoom={13}>
+                <MapControls showZoom showFullscreen showLocate />
+                <MapDrawControl position="bottom-left">
+                    <MapDrawPoint />
+                    <MapDrawLine />
                     <MapDrawPolygon />
-                    <MapDrawEdit />
+                    <MapDrawRectangle />
+                    <MapDrawCircle />
+                    <MapDrawSelect />
                     <MapDrawDelete />
-                    <MapDrawUndo />
+                    <MapDrawDownload />
                 </MapDrawControl>
             </Map>
         </div>
