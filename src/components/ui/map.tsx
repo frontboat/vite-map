@@ -152,39 +152,44 @@ async function loadFeaturesFromDB(): Promise<GeoJSONStoreFeatures[]> {
 // Multi-map IndexedDB functions
 // ============================================================================
 
-async function saveMapToDB(name: string, features: GeoJSONStoreFeatures[]): Promise<SavedMap> {
-  const db = await openDB();
-  const tx = db.transaction(MAPS_STORE_NAME, "readwrite");
-  const store = tx.objectStore(MAPS_STORE_NAME);
+async function saveMapToDB(name: string, features: GeoJSONStoreFeatures[]): Promise<SavedMap | null> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(MAPS_STORE_NAME, "readwrite");
+    const store = tx.objectStore(MAPS_STORE_NAME);
 
-  // Remove the 'selected' property from features when saving
-  const cleanedFeatures = features.map((f) => {
-    const { selected: _, ...restProperties } = f.properties;
-    return {
-      ...f,
-      properties: restProperties,
+    // Remove the 'selected' property from features when saving
+    const cleanedFeatures = features.map((f) => {
+      const { selected: _, ...restProperties } = f.properties;
+      return {
+        ...f,
+        properties: restProperties,
+      };
+    }) as GeoJSONStoreFeatures[];
+
+    const savedMap: SavedMap = {
+      id: crypto.randomUUID(),
+      name,
+      features: cleanedFeatures,
+      createdAt: Date.now(),
     };
-  }) as GeoJSONStoreFeatures[];
 
-  const savedMap: SavedMap = {
-    id: crypto.randomUUID(),
-    name,
-    features: cleanedFeatures,
-    createdAt: Date.now(),
-  };
+    store.put(savedMap);
 
-  store.put(savedMap);
-
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => {
-      db.close();
-      resolve(savedMap);
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
-  });
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => {
+        db.close();
+        resolve(savedMap);
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  } catch (error) {
+    console.error("Failed to save map to IndexedDB:", error);
+    return null;
+  }
 }
 
 async function getAllMapsFromDB(): Promise<SavedMap[]> {
@@ -213,22 +218,26 @@ async function getAllMapsFromDB(): Promise<SavedMap[]> {
 }
 
 async function deleteMapFromDB(mapId: string): Promise<void> {
-  const db = await openDB();
-  const tx = db.transaction(MAPS_STORE_NAME, "readwrite");
-  const store = tx.objectStore(MAPS_STORE_NAME);
+  try {
+    const db = await openDB();
+    const tx = db.transaction(MAPS_STORE_NAME, "readwrite");
+    const store = tx.objectStore(MAPS_STORE_NAME);
 
-  store.delete(mapId);
+    store.delete(mapId);
 
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
-  });
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  } catch (error) {
+    console.error("Failed to delete map from IndexedDB:", error);
+  }
 }
 
 // Check document class for theme (works with next-themes, etc.)
