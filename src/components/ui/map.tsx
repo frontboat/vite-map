@@ -63,6 +63,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Popover as PopoverPrimitive } from "radix-ui";
 
 // ============================================================================
 // IndexedDB helpers for feature persistence
@@ -1862,78 +1863,41 @@ type MapDrawToolbarProps = {
 function MapDrawToolbar({ children, className }: MapDrawToolbarProps) {
   const [isOpen, setIsOpen] = useState(false);
   const { terraDraw } = useDrawContext();
-  const panelRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const [panelPosition, setPanelPosition] = useState({ top: 0, left: 0 });
-
-  // Update panel position when opened
-  useEffect(() => {
-    if (isOpen && buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect();
-      setPanelPosition({
-        top: rect.bottom - rect.height, // Align bottom of panel with bottom of button
-        left: rect.right + 8, // 8px gap to the right
-      });
-    }
-  }, [isOpen]);
-
-  // Close panel when clicking outside
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (
-        isOpen &&
-        panelRef.current &&
-        buttonRef.current &&
-        !panelRef.current.contains(event.target as Node) &&
-        !buttonRef.current.contains(event.target as Node)
-      ) {
-        setIsOpen(false);
-      }
-    }
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isOpen]);
 
   return (
     <div className={cn("relative", className)}>
       <ControlGroup>
-        <button
-          ref={buttonRef}
-          onClick={() => setIsOpen(!isOpen)}
-          aria-label="Drawing tools"
-          aria-expanded={isOpen}
-          type="button"
-          disabled={!terraDraw}
-          className={cn(
-            "flex items-center justify-center size-8 transition-colors",
-            isOpen
-              ? "bg-primary text-primary-foreground"
-              : "hover:bg-accent dark:hover:bg-accent/40",
-            !terraDraw && "opacity-50 pointer-events-none cursor-not-allowed"
-          )}
-        >
-          <Settings className="size-4" />
-        </button>
+        <PopoverPrimitive.Root open={isOpen} onOpenChange={setIsOpen}>
+          <PopoverPrimitive.Trigger asChild>
+            <button
+              aria-label="Drawing tools"
+              type="button"
+              disabled={!terraDraw}
+              className={cn(
+                "flex items-center justify-center size-8 transition-colors",
+                isOpen
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-accent dark:hover:bg-accent/40",
+                !terraDraw && "opacity-50 pointer-events-none cursor-not-allowed"
+              )}
+            >
+              <Settings className="size-4" />
+            </button>
+          </PopoverPrimitive.Trigger>
+          <PopoverPrimitive.Portal>
+            <PopoverPrimitive.Content
+              side="right"
+              align="end"
+              sideOffset={8}
+              className="z-50 rounded-md border border-border bg-background shadow-md overflow-hidden"
+            >
+              <div className="flex flex-col [&>button]:border-0 [&>button:not(:last-child)]:border-b [&>button]:border-border">
+                {children}
+              </div>
+            </PopoverPrimitive.Content>
+          </PopoverPrimitive.Portal>
+        </PopoverPrimitive.Root>
       </ControlGroup>
-      {isOpen &&
-        createPortal(
-          <div
-            ref={panelRef}
-            style={{
-              position: "fixed",
-              top: panelPosition.top,
-              left: panelPosition.left,
-              transform: "translateY(-100%) translateY(32px)", // Align bottom with button bottom
-            }}
-            className="z-50 rounded-md border border-border bg-background shadow-md overflow-hidden"
-          >
-            <div className="flex flex-col [&>button]:border-0 [&>button:not(:last-child)]:border-b [&>button]:border-border">
-              {children}
-            </div>
-          </div>,
-          document.body
-        )}
     </div>
   );
 }
@@ -2236,38 +2200,6 @@ function MapDrawMapManager() {
   } = useDrawContext();
   const [isOpen, setIsOpen] = useState(false);
   const [newMapName, setNewMapName] = useState("");
-  const panelRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const [panelPosition, setPanelPosition] = useState({ bottom: 0, left: 0 });
-
-  // Update panel position when opened
-  useEffect(() => {
-    if (isOpen && buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect();
-      setPanelPosition({
-        bottom: window.innerHeight - rect.bottom,
-        left: rect.right + 8,
-      });
-    }
-  }, [isOpen]);
-
-  // Close panel when clicking outside
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (
-        isOpen &&
-        panelRef.current &&
-        buttonRef.current &&
-        !panelRef.current.contains(event.target as Node) &&
-        !buttonRef.current.contains(event.target as Node)
-      ) {
-        setIsOpen(false);
-      }
-    }
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isOpen]);
 
   const handleSave = async () => {
     if (!newMapName.trim() || features.length === 0) return;
@@ -2282,134 +2214,132 @@ function MapDrawMapManager() {
   };
 
   return (
-    <>
-      <button
-        ref={buttonRef}
-        onClick={() => setIsOpen(!isOpen)}
-        aria-label="Manage saved maps"
-        aria-expanded={isOpen}
-        type="button"
-        disabled={!terraDraw}
-        className={cn(
-          "flex items-center justify-center size-8 transition-colors",
-          isOpen
-            ? "bg-primary text-primary-foreground"
-            : "hover:bg-accent dark:hover:bg-accent/40",
-          !terraDraw && "opacity-50 pointer-events-none cursor-not-allowed"
-        )}
-      >
-        <Layers className="size-4" />
-      </button>
-      {isOpen &&
-        createPortal(
-          <div
-            ref={panelRef}
-            style={{
-              position: "fixed",
-              bottom: panelPosition.bottom,
-              left: panelPosition.left,
-            }}
-            className="z-50 w-64 rounded-md border border-border bg-background shadow-md overflow-hidden"
-          >
-            <div className="p-3 border-b border-border">
-              <div className="text-xs font-medium text-muted-foreground mb-2 text-balance">
-                Save current as map
-              </div>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newMapName}
-                  onChange={(e) => setNewMapName(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Map name..."
-                  aria-label="Map name"
-                  className="flex-1 h-7 px-2 text-sm rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-                />
-                <button
-                  onClick={handleSave}
-                  aria-label="Save map"
-                  disabled={!newMapName.trim() || features.length === 0}
-                  className={cn(
-                    "h-7 px-2 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 transition-colors",
-                    (!newMapName.trim() || features.length === 0) &&
-                      "opacity-50 cursor-not-allowed"
-                  )}
-                >
-                  <Save className="size-3.5" />
-                </button>
-              </div>
+    <PopoverPrimitive.Root open={isOpen} onOpenChange={setIsOpen}>
+      <PopoverPrimitive.Trigger asChild>
+        <button
+          aria-label="Manage saved maps"
+          type="button"
+          disabled={!terraDraw}
+          className={cn(
+            "flex items-center justify-center size-8 transition-colors",
+            isOpen
+              ? "bg-primary text-primary-foreground"
+              : "hover:bg-accent dark:hover:bg-accent/40",
+            !terraDraw && "opacity-50 pointer-events-none cursor-not-allowed"
+          )}
+        >
+          <Layers className="size-4" />
+        </button>
+      </PopoverPrimitive.Trigger>
+      <PopoverPrimitive.Portal>
+        <PopoverPrimitive.Content
+          side="right"
+          align="end"
+          sideOffset={8}
+          className="z-50 w-64 rounded-md border border-border bg-background shadow-md overflow-hidden"
+          onOpenAutoFocus={(e) => e.preventDefault()}
+        >
+          <div className="p-3 border-b border-border">
+            <div className="text-xs font-medium text-muted-foreground mb-2 text-balance">
+              Save current as map
             </div>
-            <div className="max-h-48 overflow-y-auto">
-              {savedMaps.length === 0 ? (
-                <div className="p-3 text-sm text-muted-foreground text-center">
-                  No saved maps yet
-                </div>
-              ) : (
-                <div className="divide-y divide-border">
-                  {savedMaps.map((savedMap) => {
-                    const isLoaded = loadedMapIds.has(savedMap.id);
-                    return (
-                      <div
-                        key={savedMap.id}
-                        className="flex items-center gap-2 p-2 hover:bg-accent/50"
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newMapName}
+                onChange={(e) => setNewMapName(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Map name..."
+                aria-label="Map name"
+                className="flex-1 h-7 px-2 text-sm rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <button
+                onClick={handleSave}
+                aria-label="Save map"
+                type="button"
+                disabled={!newMapName.trim() || features.length === 0}
+                className={cn(
+                  "h-7 px-2 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 transition-colors",
+                  (!newMapName.trim() || features.length === 0) &&
+                    "opacity-50 cursor-not-allowed"
+                )}
+              >
+                <Save className="size-3.5" />
+              </button>
+            </div>
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            {savedMaps.length === 0 ? (
+              <div className="p-3 text-sm text-muted-foreground text-center">
+                No saved maps yet
+              </div>
+            ) : (
+              <div className="divide-y divide-border">
+                {savedMaps.map((savedMap) => {
+                  const isLoaded = loadedMapIds.has(savedMap.id);
+                  return (
+                    <div
+                      key={savedMap.id}
+                      className="flex items-center gap-2 p-2 hover:bg-accent/50"
+                    >
+                      <button
+                        onClick={() => toggleMap(savedMap.id)}
+                        aria-label={isLoaded ? "Hide map" : "Show map"}
+                        type="button"
+                        className={cn(
+                          "size-9 flex items-center justify-center rounded transition-colors",
+                          isLoaded
+                            ? "text-primary"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
                       >
-                        <button
-                          onClick={() => toggleMap(savedMap.id)}
-                          aria-label={isLoaded ? "Hide map" : "Show map"}
-                          className={cn(
-                            "p-2 rounded transition-colors",
-                            isLoaded
-                              ? "text-primary"
-                              : "text-muted-foreground hover:text-foreground"
-                          )}
-                        >
-                          {isLoaded ? (
-                            <Eye className="size-4" />
-                          ) : (
-                            <EyeOff className="size-4" />
-                          )}
-                        </button>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm truncate">{savedMap.name}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {savedMap.features.length} feature
-                            {savedMap.features.length !== 1 ? "s" : ""}
-                          </div>
+                        {isLoaded ? (
+                          <Eye className="size-4" />
+                        ) : (
+                          <EyeOff className="size-4" />
+                        )}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm truncate">{savedMap.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {savedMap.features.length} feature
+                          {savedMap.features.length !== 1 ? "s" : ""}
                         </div>
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <button
-                              aria-label="Delete map"
-                              className="p-2 rounded text-muted-foreground hover:text-destructive transition-colors"
-                            >
-                              <Trash2 className="size-3.5" />
-                            </button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent size="sm">
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>Delete "{savedMap.name}"?</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                This will permanently delete this saved map with {savedMap.features.length} feature{savedMap.features.length !== 1 ? "s" : ""}.
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>Cancel</AlertDialogCancel>
-                              <AlertDialogAction variant="destructive" onClick={() => deleteMap(savedMap.id)}>
-                                Delete
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>,
-          document.body
-        )}
-    </>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <button
+                            aria-label="Delete map"
+                            type="button"
+                            className="size-9 flex items-center justify-center rounded text-muted-foreground hover:text-destructive transition-colors"
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent size="sm">
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete "{savedMap.name}"?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This will permanently delete this saved map with {savedMap.features.length} feature{savedMap.features.length !== 1 ? "s" : ""}.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction variant="destructive" onClick={() => deleteMap(savedMap.id)}>
+                              Delete
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
   );
 }
 
