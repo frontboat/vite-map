@@ -2238,14 +2238,14 @@ function MapDrawMapManager() {
   const [newMapName, setNewMapName] = useState("");
   const panelRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const [panelPosition, setPanelPosition] = useState({ top: 0, left: 0 });
+  const [panelPosition, setPanelPosition] = useState({ bottom: 0, left: 0 });
 
   // Update panel position when opened
   useEffect(() => {
     if (isOpen && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect();
       setPanelPosition({
-        top: rect.top,
+        bottom: window.innerHeight - rect.bottom,
         left: rect.right + 8,
       });
     }
@@ -2306,7 +2306,7 @@ function MapDrawMapManager() {
             ref={panelRef}
             style={{
               position: "fixed",
-              top: panelPosition.top,
+              bottom: panelPosition.bottom,
               left: panelPosition.left,
             }}
             className="z-50 w-64 rounded-md border border-border bg-background shadow-md overflow-hidden"
