@@ -2,6 +2,8 @@ import {
     Map,
     MapControls,
     MapDrawControl,
+    MapDrawModes,
+    MapDrawToolbar,
     MapDrawPoint,
     MapDrawLine,
     MapDrawPolygon,
@@ -10,22 +12,30 @@ import {
     MapDrawSelect,
     MapDrawDelete,
     MapDrawDownload,
+    MapDrawImport,
+    MapDrawMapManager,
 } from "@/components/ui/map"
 
 export function App() {
     return (
-        <div className="h-screen w-screen">
-            <Map center={[-86.1581, 39.7684]} zoom={13}>
+        <div className="h-dvh w-screen">
+            <Map center={[-104.89244, 34.099547]} zoom={6.5}>
                 <MapControls showZoom showFullscreen showLocate />
                 <MapDrawControl position="bottom-left">
-                    <MapDrawPoint />
-                    <MapDrawLine />
-                    <MapDrawPolygon />
-                    <MapDrawRectangle />
-                    <MapDrawCircle />
-                    <MapDrawSelect />
-                    <MapDrawDelete />
-                    <MapDrawDownload />
+                    <MapDrawModes>
+                        <MapDrawPoint />
+                        <MapDrawLine />
+                        <MapDrawPolygon />
+                        <MapDrawRectangle />
+                        <MapDrawCircle />
+                        <MapDrawSelect />
+                    </MapDrawModes>
+                    <MapDrawToolbar>
+                        <MapDrawDelete />
+                        <MapDrawDownload />
+                        <MapDrawImport />
+                        <MapDrawMapManager />
+                    </MapDrawToolbar>
                 </MapDrawControl>
             </Map>
         </div>

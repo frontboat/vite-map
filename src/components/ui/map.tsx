@@ -31,6 +31,12 @@ import {
   PenLine,
   Trash2,
   Download,
+  Upload,
+  Settings,
+  Layers,
+  Save,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import {
   TerraDraw,
@@ -46,6 +52,220 @@ import {
 import { TerraDrawMapLibreGLAdapter } from "terra-draw-maplibre-gl-adapter";
 
 import { cn } from "@/lib/utils";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Popover as PopoverPrimitive } from "radix-ui";
+
+// ============================================================================
+// IndexedDB helpers for feature persistence
+// ============================================================================
+
+const DB_NAME = "map-draw-features";
+const DB_VERSION = 2;
+const STORE_NAME = "features";
+const MAPS_STORE_NAME = "maps";
+
+type SavedMap = {
+  id: string;
+  name: string;
+  features: GeoJSONStoreFeatures[];
+  createdAt: number;
+};
+
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: "id" });
+      }
+      if (!db.objectStoreNames.contains(MAPS_STORE_NAME)) {
+        db.createObjectStore(MAPS_STORE_NAME, { keyPath: "id" });
+      }
+    };
+  });
+}
+
+// ============================================================================
+// Session persistence (auto-save current work)
+// ============================================================================
+
+async function saveSessionToDB(features: GeoJSONStoreFeatures[]): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+
+    // Clear existing and save all features
+    store.clear();
+    features.forEach((feature) => {
+      store.put({ id: feature.id, data: feature });
+    });
+
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  } catch (error) {
+    console.error("Failed to save session to IndexedDB:", error);
+  }
+}
+
+async function loadSessionFromDB(): Promise<GeoJSONStoreFeatures[]> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.getAll();
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => {
+        db.close();
+        const results = request.result as { id: string; data: GeoJSONStoreFeatures }[];
+        resolve(results.map((r) => r.data));
+      };
+      request.onerror = () => {
+        db.close();
+        reject(request.error);
+      };
+    });
+  } catch (error) {
+    console.error("Failed to load session from IndexedDB:", error);
+    return [];
+  }
+}
+
+async function clearSessionFromDB(): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    store.clear();
+
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  } catch (error) {
+    console.error("Failed to clear session from IndexedDB:", error);
+  }
+}
+
+// ============================================================================
+// Multi-map IndexedDB functions
+// ============================================================================
+
+async function saveMapToDB(name: string, features: GeoJSONStoreFeatures[]): Promise<SavedMap | null> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(MAPS_STORE_NAME, "readwrite");
+    const store = tx.objectStore(MAPS_STORE_NAME);
+
+    // Remove the 'selected' property from features when saving
+    const cleanedFeatures = features.map((f) => {
+      const { selected: _, ...restProperties } = f.properties;
+      return {
+        ...f,
+        properties: restProperties,
+      };
+    }) as GeoJSONStoreFeatures[];
+
+    const savedMap: SavedMap = {
+      id: crypto.randomUUID(),
+      name,
+      features: cleanedFeatures,
+      createdAt: Date.now(),
+    };
+
+    store.put(savedMap);
+
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => {
+        db.close();
+        resolve(savedMap);
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  } catch (error) {
+    console.error("Failed to save map to IndexedDB:", error);
+    return null;
+  }
+}
+
+async function getAllMapsFromDB(): Promise<SavedMap[]> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(MAPS_STORE_NAME, "readonly");
+    const store = tx.objectStore(MAPS_STORE_NAME);
+    const request = store.getAll();
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => {
+        db.close();
+        const maps = request.result as SavedMap[];
+        // Sort by creation date, newest first
+        resolve(maps.sort((a, b) => b.createdAt - a.createdAt));
+      };
+      request.onerror = () => {
+        db.close();
+        reject(request.error);
+      };
+    });
+  } catch (error) {
+    console.error("Failed to load maps from IndexedDB:", error);
+    return [];
+  }
+}
+
+async function deleteMapFromDB(mapId: string): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(MAPS_STORE_NAME, "readwrite");
+    const store = tx.objectStore(MAPS_STORE_NAME);
+
+    store.delete(mapId);
+
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  } catch (error) {
+    console.error("Failed to delete map from IndexedDB:", error);
+  }
+}
 
 // Check document class for theme (works with next-themes, etc.)
 function getDocumentTheme(): Theme | null {
@@ -147,9 +367,9 @@ type MapRef = MapLibreGL.Map;
 const DefaultLoader = () => (
   <div className="absolute inset-0 flex items-center justify-center">
     <div className="flex gap-1">
-      <span className="size-1.5 rounded-full bg-muted-foreground/60 animate-pulse" />
-      <span className="size-1.5 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:150ms]" />
-      <span className="size-1.5 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:300ms]" />
+      <span className="size-1.5 rounded-full bg-muted-foreground/60 motion-safe:animate-pulse" />
+      <span className="size-1.5 rounded-full bg-muted-foreground/60 motion-safe:animate-pulse [animation-delay:150ms]" />
+      <span className="size-1.5 rounded-full bg-muted-foreground/60 motion-safe:animate-pulse [animation-delay:300ms]" />
     </div>
   </div>
 );
@@ -315,6 +535,26 @@ function MapMarker({
 }: MapMarkerProps) {
   const { map } = useMap();
 
+  // Use refs to store the latest callback functions to avoid stale closures
+  const callbacksRef = useRef({
+    onClick,
+    onMouseEnter,
+    onMouseLeave,
+    onDragStart,
+    onDrag,
+    onDragEnd,
+  });
+
+  // Keep refs updated with latest callbacks
+  callbacksRef.current = {
+    onClick,
+    onMouseEnter,
+    onMouseLeave,
+    onDragStart,
+    onDrag,
+    onDragEnd,
+  };
+
   const marker = useMemo(() => {
     const markerInstance = new MapLibreGL.Marker({
       ...markerOptions,
@@ -322,9 +562,9 @@ function MapMarker({
       draggable,
     }).setLngLat([longitude, latitude]);
 
-    const handleClick = (e: MouseEvent) => onClick?.(e);
-    const handleMouseEnter = (e: MouseEvent) => onMouseEnter?.(e);
-    const handleMouseLeave = (e: MouseEvent) => onMouseLeave?.(e);
+    const handleClick = (e: MouseEvent) => callbacksRef.current.onClick?.(e);
+    const handleMouseEnter = (e: MouseEvent) => callbacksRef.current.onMouseEnter?.(e);
+    const handleMouseLeave = (e: MouseEvent) => callbacksRef.current.onMouseLeave?.(e);
 
     markerInstance.getElement()?.addEventListener("click", handleClick);
     markerInstance
@@ -336,15 +576,15 @@ function MapMarker({
 
     const handleDragStart = () => {
       const lngLat = markerInstance.getLngLat();
-      onDragStart?.({ lng: lngLat.lng, lat: lngLat.lat });
+      callbacksRef.current.onDragStart?.({ lng: lngLat.lng, lat: lngLat.lat });
     };
     const handleDrag = () => {
       const lngLat = markerInstance.getLngLat();
-      onDrag?.({ lng: lngLat.lng, lat: lngLat.lat });
+      callbacksRef.current.onDrag?.({ lng: lngLat.lng, lat: lngLat.lat });
     };
     const handleDragEnd = () => {
       const lngLat = markerInstance.getLngLat();
-      onDragEnd?.({ lng: lngLat.lng, lat: lngLat.lat });
+      callbacksRef.current.onDragEnd?.({ lng: lngLat.lng, lat: lngLat.lat });
     };
 
     markerInstance.on("dragstart", handleDragStart);
@@ -424,7 +664,7 @@ function MarkerContent({ children, className }: MarkerContentProps) {
 
 function DefaultMarkerIcon() {
   return (
-    <div className="relative h-4 w-4 rounded-full border-2 border-white bg-blue-500 shadow-lg" />
+    <div className="relative size-4 rounded-full border-2 border-white bg-blue-500 shadow-lg" />
   );
 }
 
@@ -501,7 +741,7 @@ function MarkerPopup({
           className="absolute top-1 right-1 z-10 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
           aria-label="Close popup"
         >
-          <X className="h-4 w-4" />
+          <X className="size-4" />
           <span className="sr-only">Close</span>
         </button>
       )}
@@ -925,7 +1165,7 @@ function MapPopup({
           className="absolute top-1 right-1 z-10 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
           aria-label="Close popup"
         >
-          <X className="h-4 w-4" />
+          <X className="size-4" />
           <span className="sr-only">Close</span>
         </button>
       )}
@@ -1392,6 +1632,14 @@ type DrawContextValue = {
   activeMode: DrawMode;
   setActiveMode: (mode: DrawMode) => void;
   features: GeoJSONStoreFeatures[];
+  // Multi-map support
+  savedMaps: SavedMap[];
+  loadedMapIds: Set<string>;
+  saveCurrentAsMap: (name: string) => Promise<void>;
+  toggleMap: (mapId: string) => void;
+  deleteMap: (mapId: string) => Promise<void>;
+  refreshMaps: () => Promise<void>;
+  clearCanvas: () => Promise<void>;
 };
 
 const DrawContext = createContext<DrawContextValue | null>(null);
@@ -1425,6 +1673,19 @@ function MapDrawControl({
   const [terraDraw, setTerraDraw] = useState<TerraDraw | null>(null);
   const [activeMode, setActiveMode] = useState<DrawMode>(null);
   const [features, setFeatures] = useState<GeoJSONStoreFeatures[]>([]);
+  const hasLoadedFromDB = useRef(false);
+
+  // Multi-map support
+  const [savedMaps, setSavedMaps] = useState<SavedMap[]>([]);
+  const [loadedMapIds, setLoadedMapIds] = useState<Set<string>>(new Set());
+  // Track which feature IDs belong to which loaded map
+  // Using globalThis.Map to avoid conflict with the Map component
+  const loadedMapFeaturesRef = useRef<globalThis.Map<string, string[]>>(new globalThis.Map());
+
+  // Load saved maps list on mount
+  useEffect(() => {
+    getAllMapsFromDB().then(setSavedMaps);
+  }, []);
 
   useEffect(() => {
     if (!isLoaded || !map) return;
@@ -1463,10 +1724,22 @@ function MapDrawControl({
 
     draw.start();
 
+    // Auto-load session features from IndexedDB on mount
+    if (!hasLoadedFromDB.current) {
+      hasLoadedFromDB.current = true;
+      loadSessionFromDB().then((savedFeatures) => {
+        if (savedFeatures.length > 0) {
+          draw.addFeatures(savedFeatures);
+        }
+      });
+    }
+
     draw.on("change", () => {
       const snapshot = draw.getSnapshot();
       setFeatures(snapshot);
       onFeaturesChange?.(snapshot);
+      // Auto-save session to IndexedDB
+      saveSessionToDB(snapshot);
     });
 
     setTerraDraw(draw);
@@ -1493,14 +1766,104 @@ function MapDrawControl({
     [terraDraw, activeMode]
   );
 
+  const refreshMaps = useCallback(async () => {
+    const maps = await getAllMapsFromDB();
+    setSavedMaps(maps);
+  }, []);
+
+  const saveCurrentAsMap = useCallback(
+    async (name: string) => {
+      if (!terraDraw || features.length === 0) return;
+      await saveMapToDB(name, features);
+      await refreshMaps();
+    },
+    [terraDraw, features, refreshMaps]
+  );
+
+  const toggleMap = useCallback(
+    (mapId: string) => {
+      if (!terraDraw) return;
+
+      const isCurrentlyLoaded = loadedMapIds.has(mapId);
+
+      if (isCurrentlyLoaded) {
+        // Remove the map's features
+        const featureIds = loadedMapFeaturesRef.current.get(mapId) || [];
+        if (featureIds.length > 0) {
+          terraDraw.removeFeatures(featureIds);
+        }
+        loadedMapFeaturesRef.current.delete(mapId);
+        setLoadedMapIds((prev) => {
+          const next = new Set(prev);
+          next.delete(mapId);
+          return next;
+        });
+      } else {
+        // Add the map's features
+        const savedMap = savedMaps.find((m) => m.id === mapId);
+        if (savedMap && savedMap.features.length > 0) {
+          // Add features and track their new IDs
+          const addedIds: string[] = [];
+          savedMap.features.forEach((feature) => {
+            const newId = crypto.randomUUID();
+            terraDraw.addFeatures([
+              {
+                ...feature,
+                id: newId,
+              },
+            ]);
+            addedIds.push(newId);
+          });
+          loadedMapFeaturesRef.current.set(mapId, addedIds);
+          setLoadedMapIds((prev) => new Set(prev).add(mapId));
+        }
+      }
+    },
+    [terraDraw, loadedMapIds, savedMaps]
+  );
+
+  const deleteMap = useCallback(
+    async (mapId: string) => {
+      // If the map is loaded, unload it first
+      if (loadedMapIds.has(mapId)) {
+        toggleMap(mapId);
+      }
+      await deleteMapFromDB(mapId);
+      await refreshMaps();
+    },
+    [loadedMapIds, toggleMap, refreshMaps]
+  );
+
+  const clearCanvas = useCallback(async () => {
+    if (!terraDraw) return;
+    // Remove all features from the canvas
+    const currentFeatures = terraDraw.getSnapshot();
+    if (currentFeatures.length > 0) {
+      const featureIds = currentFeatures.map((f) => f.id as string);
+      terraDraw.removeFeatures(featureIds);
+    }
+    // Clear the loaded map tracking
+    loadedMapFeaturesRef.current.clear();
+    setLoadedMapIds(new Set());
+    // Clear the session storage
+    await clearSessionFromDB();
+  }, [terraDraw]);
+
   const contextValue = useMemo(
     () => ({
       terraDraw,
       activeMode,
       setActiveMode: handleSetActiveMode,
       features,
+      savedMaps,
+      loadedMapIds,
+      saveCurrentAsMap,
+      toggleMap,
+      deleteMap,
+      refreshMaps,
+      clearCanvas,
     }),
-    [terraDraw, activeMode, handleSetActiveMode, features]
+    [terraDraw, activeMode, handleSetActiveMode, features, savedMaps, loadedMapIds, saveCurrentAsMap, toggleMap, deleteMap, refreshMaps, clearCanvas]
   );
 
   return (
@@ -1512,9 +1875,73 @@ function MapDrawControl({
           className
         )}
       >
-        <ControlGroup>{children}</ControlGroup>
+        {children}
       </div>
     </DrawContext.Provider>
+  );
+}
+
+type MapDrawModesProps = {
+  /** Draw mode buttons */
+  children: ReactNode;
+  /** Additional CSS classes */
+  className?: string;
+};
+
+function MapDrawModes({ children, className }: MapDrawModesProps) {
+  return (
+    <ControlGroup>
+      <div className={cn("flex flex-col", className)}>{children}</div>
+    </ControlGroup>
+  );
+}
+
+type MapDrawToolbarProps = {
+  /** Draw tool buttons to show in the expanded panel */
+  children: ReactNode;
+  /** Additional CSS classes */
+  className?: string;
+};
+
+function MapDrawToolbar({ children, className }: MapDrawToolbarProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const { terraDraw } = useDrawContext();
+
+  return (
+    <div className={cn("relative", className)}>
+      <ControlGroup>
+        <PopoverPrimitive.Root open={isOpen} onOpenChange={setIsOpen}>
+          <PopoverPrimitive.Trigger asChild>
+            <button
+              aria-label="Drawing tools"
+              type="button"
+              disabled={!terraDraw}
+              className={cn(
+                "flex items-center justify-center size-8 transition-colors",
+                isOpen
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-accent dark:hover:bg-accent/40",
+                !terraDraw && "opacity-50 pointer-events-none cursor-not-allowed"
+              )}
+            >
+              <Settings className="size-4" />
+            </button>
+          </PopoverPrimitive.Trigger>
+          <PopoverPrimitive.Portal>
+            <PopoverPrimitive.Content
+              side="right"
+              align="end"
+              sideOffset={8}
+              className="z-50 rounded-md border border-border bg-background shadow-md overflow-hidden"
+            >
+              <div className="flex flex-col [&>button]:border-0 [&>button:not(:last-child)]:border-b [&>button]:border-border">
+                {children}
+              </div>
+            </PopoverPrimitive.Content>
+          </PopoverPrimitive.Portal>
+        </PopoverPrimitive.Root>
+      </ControlGroup>
+    </div>
   );
 }
 
@@ -1604,40 +2031,75 @@ function MapDrawSelect() {
 }
 
 function MapDrawDelete() {
-  const { terraDraw, activeMode, setActiveMode, features } = useDrawContext();
+  const { terraDraw, activeMode, setActiveMode, features, clearCanvas } = useDrawContext();
   const hasFeatures = features.length > 0;
 
-  const handleDelete = useCallback(() => {
+  // Check if we have selected features in select mode
+  const selectedFeatures = activeMode === "select" && terraDraw
+    ? terraDraw.getSnapshot().filter((f) => f.properties.selected)
+    : [];
+  const hasSelection = selectedFeatures.length > 0;
+
+  const handleDeleteSelected = useCallback(() => {
     if (!terraDraw) return;
+    selectedFeatures.forEach((f) => terraDraw.removeFeatures([f.id as string]));
+  }, [terraDraw, selectedFeatures]);
 
-    // If in select mode and have selected features, delete them
-    if (activeMode === "select") {
-      const selected = terraDraw.getSnapshot().filter((f) => f.properties.selected);
-      if (selected.length > 0) {
-        selected.forEach((f) => terraDraw.removeFeatures([f.id as string]));
-        return;
-      }
-    }
-
-    // Otherwise clear all features
-    terraDraw.clear();
+  const handleClearAll = useCallback(async () => {
+    await clearCanvas();
     setActiveMode(null);
-  }, [terraDraw, activeMode, setActiveMode]);
+  }, [clearCanvas, setActiveMode]);
 
+  // If in select mode with selected features, delete without confirmation
+  if (hasSelection) {
+    return (
+      <button
+        onClick={handleDeleteSelected}
+        aria-label="Delete selected features"
+        type="button"
+        disabled={!terraDraw}
+        className={cn(
+          "flex items-center justify-center size-8 transition-colors hover:bg-accent dark:hover:bg-accent/40",
+          !terraDraw && "opacity-50 pointer-events-none cursor-not-allowed"
+        )}
+      >
+        <Trash2 className="size-4" />
+      </button>
+    );
+  }
+
+  // Otherwise show confirmation dialog for clearing all
   return (
-    <button
-      onClick={handleDelete}
-      aria-label="Delete features"
-      type="button"
-      disabled={!terraDraw || !hasFeatures}
-      className={cn(
-        "flex items-center justify-center size-8 transition-colors hover:bg-accent dark:hover:bg-accent/40",
-        (!terraDraw || !hasFeatures) &&
-          "opacity-50 pointer-events-none cursor-not-allowed"
-      )}
-    >
-      <Trash2 className="size-4" />
-    </button>
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <button
+          aria-label="Delete all features"
+          type="button"
+          disabled={!terraDraw || !hasFeatures}
+          className={cn(
+            "flex items-center justify-center size-8 transition-colors hover:bg-accent dark:hover:bg-accent/40",
+            (!terraDraw || !hasFeatures) &&
+              "opacity-50 pointer-events-none cursor-not-allowed"
+          )}
+        >
+          <Trash2 className="size-4" />
+        </button>
+      </AlertDialogTrigger>
+      <AlertDialogContent size="sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete all features?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will permanently delete all {features.length} drawn feature{features.length !== 1 ? "s" : ""} from the map.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={handleClearAll}>
+            Delete all
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -1650,11 +2112,14 @@ function MapDrawDownload() {
 
     const geojson = {
       type: "FeatureCollection",
-      features: features.map((f) => ({
-        type: "Feature",
-        geometry: f.geometry,
-        properties: { ...f.properties, selected: undefined },
-      })),
+      features: features.map((f) => {
+        const { selected: _, ...properties } = f.properties;
+        return {
+          type: "Feature",
+          geometry: f.geometry,
+          properties,
+        };
+      }),
     };
 
     const blob = new Blob([JSON.stringify(geojson, null, 2)], {
@@ -1684,6 +2149,242 @@ function MapDrawDownload() {
   );
 }
 
+function MapDrawImport() {
+  const { terraDraw } = useDrawContext();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleImport = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file || !terraDraw) return;
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const content = e.target?.result as string;
+          const geojson = JSON.parse(content);
+
+          // Handle both FeatureCollection and single Feature
+          const features = geojson.type === "FeatureCollection"
+            ? geojson.features
+            : [geojson];
+
+          // Add each feature to TerraDraw
+          features.forEach((feature: GeoJSON.Feature) => {
+            if (feature.geometry) {
+              const geomType = feature.geometry.type;
+              // Only support Point, LineString, and Polygon geometries
+              if (geomType === "Point" || geomType === "LineString" || geomType === "Polygon") {
+                const modeMap: Record<string, string> = {
+                  Point: "point",
+                  LineString: "linestring",
+                  Polygon: "polygon",
+                };
+                terraDraw.addFeatures([
+                  {
+                    type: "Feature",
+                    geometry: feature.geometry as GeoJSON.Point | GeoJSON.LineString | GeoJSON.Polygon,
+                    properties: { mode: modeMap[geomType] },
+                  },
+                ]);
+              }
+            }
+          });
+        } catch (error) {
+          console.error("Failed to parse GeoJSON:", error);
+        }
+      };
+      reader.readAsText(file);
+
+      // Reset input so the same file can be selected again
+      if (inputRef.current) {
+        inputRef.current.value = "";
+      }
+    },
+    [terraDraw]
+  );
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".geojson,.json"
+        onChange={handleImport}
+        aria-label="Import GeoJSON file"
+        className="hidden"
+      />
+      <button
+        onClick={() => inputRef.current?.click()}
+        aria-label="Import GeoJSON"
+        type="button"
+        disabled={!terraDraw}
+        className={cn(
+          "flex items-center justify-center size-8 transition-colors hover:bg-accent dark:hover:bg-accent/40",
+          !terraDraw && "opacity-50 pointer-events-none cursor-not-allowed"
+        )}
+      >
+        <Upload className="size-4" />
+      </button>
+    </>
+  );
+}
+
+function MapDrawMapManager() {
+  const {
+    terraDraw,
+    features,
+    savedMaps,
+    loadedMapIds,
+    saveCurrentAsMap,
+    toggleMap,
+    deleteMap,
+  } = useDrawContext();
+  const [isOpen, setIsOpen] = useState(false);
+  const [newMapName, setNewMapName] = useState("");
+
+  const handleSave = async () => {
+    if (!newMapName.trim() || features.length === 0) return;
+    await saveCurrentAsMap(newMapName.trim());
+    setNewMapName("");
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      handleSave();
+    }
+  };
+
+  return (
+    <PopoverPrimitive.Root open={isOpen} onOpenChange={setIsOpen}>
+      <PopoverPrimitive.Trigger asChild>
+        <button
+          aria-label="Manage saved maps"
+          type="button"
+          disabled={!terraDraw}
+          className={cn(
+            "flex items-center justify-center size-8 transition-colors",
+            isOpen
+              ? "bg-primary text-primary-foreground"
+              : "hover:bg-accent dark:hover:bg-accent/40",
+            !terraDraw && "opacity-50 pointer-events-none cursor-not-allowed"
+          )}
+        >
+          <Layers className="size-4" />
+        </button>
+      </PopoverPrimitive.Trigger>
+      <PopoverPrimitive.Portal>
+        <PopoverPrimitive.Content
+          side="right"
+          align="end"
+          sideOffset={8}
+          className="z-50 w-64 rounded-md border border-border bg-background shadow-md overflow-hidden"
+          onOpenAutoFocus={(e) => e.preventDefault()}
+        >
+          <div className="p-3 border-b border-border">
+            <div className="text-xs font-medium text-muted-foreground mb-2 text-balance">
+              Save current as map
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newMapName}
+                onChange={(e) => setNewMapName(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Map name..."
+                aria-label="Map name"
+                className="flex-1 h-7 px-2 text-sm rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <button
+                onClick={handleSave}
+                aria-label="Save map"
+                type="button"
+                disabled={!newMapName.trim() || features.length === 0}
+                className={cn(
+                  "h-7 px-2 rounded bg-primary text-primary-foreground text-sm hover:bg-primary/90 transition-colors",
+                  (!newMapName.trim() || features.length === 0) &&
+                    "opacity-50 cursor-not-allowed"
+                )}
+              >
+                <Save className="size-3.5" />
+              </button>
+            </div>
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            {savedMaps.length === 0 ? (
+              <div className="p-3 text-sm text-muted-foreground text-center">
+                No saved maps yet
+              </div>
+            ) : (
+              <div className="divide-y divide-border">
+                {savedMaps.map((savedMap) => {
+                  const isLoaded = loadedMapIds.has(savedMap.id);
+                  return (
+                    <div
+                      key={savedMap.id}
+                      className="flex items-center gap-2 p-2 hover:bg-accent/50"
+                    >
+                      <button
+                        onClick={() => toggleMap(savedMap.id)}
+                        aria-label={isLoaded ? "Hide map" : "Show map"}
+                        type="button"
+                        className={cn(
+                          "size-9 flex items-center justify-center rounded transition-colors",
+                          isLoaded
+                            ? "text-primary"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        {isLoaded ? (
+                          <Eye className="size-4" />
+                        ) : (
+                          <EyeOff className="size-4" />
+                        )}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm truncate">{savedMap.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {savedMap.features.length} feature
+                          {savedMap.features.length !== 1 ? "s" : ""}
+                        </div>
+                      </div>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <button
+                            aria-label="Delete map"
+                            type="button"
+                            className="size-9 flex items-center justify-center rounded text-muted-foreground hover:text-destructive transition-colors"
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent size="sm">
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete "{savedMap.name}"?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This will permanently delete this saved map with {savedMap.features.length} feature{savedMap.features.length !== 1 ? "s" : ""}.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction variant="destructive" onClick={() => deleteMap(savedMap.id)}>
+                              Delete
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
+  );
+}
+
 export {
   Map,
   useMap,
@@ -1698,6 +2399,8 @@ export {
   MapClusterLayer,
   // Draw controls
   MapDrawControl,
+  MapDrawModes,
+  MapDrawToolbar,
   MapDrawPoint,
   MapDrawLine,
   MapDrawPolygon,
@@ -1707,6 +2410,8 @@ export {
   MapDrawSelect,
   MapDrawDelete,
   MapDrawDownload,
+  MapDrawImport,
+  MapDrawMapManager,
   useDrawContext,
 };
 
