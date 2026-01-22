@@ -2077,11 +2077,14 @@ function MapDrawDownload() {
 
     const geojson = {
       type: "FeatureCollection",
-      features: features.map((f) => ({
-        type: "Feature",
-        geometry: f.geometry,
-        properties: { ...f.properties, selected: undefined },
-      })),
+      features: features.map((f) => {
+        const { selected: _, ...properties } = f.properties;
+        return {
+          type: "Feature",
+          geometry: f.geometry,
+          properties,
+        };
+      }),
     };
 
     const blob = new Blob([JSON.stringify(geojson, null, 2)], {
