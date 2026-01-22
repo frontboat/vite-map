@@ -19,7 +19,7 @@ import {
 export function App() {
     return (
         <div className="h-dvh w-screen">
-            <Map center={[-86.1581, 39.7684]} zoom={13}>
+            <Map center={[-104.89244, 34.099547]} zoom={6.5}>
                 <MapControls showZoom showFullscreen showLocate />
                 <MapDrawControl position="bottom-left">
                     <MapDrawModes>

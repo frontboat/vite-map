@@ -98,7 +98,11 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
-async function saveFeaturesToDB(features: GeoJSONStoreFeatures[]): Promise<void> {
+// ============================================================================
+// Session persistence (auto-save current work)
+// ============================================================================
+
+async function saveSessionToDB(features: GeoJSONStoreFeatures[]): Promise<void> {
   try {
     const db = await openDB();
     const tx = db.transaction(STORE_NAME, "readwrite");
@@ -121,11 +125,11 @@ async function saveFeaturesToDB(features: GeoJSONStoreFeatures[]): Promise<void>
       };
     });
   } catch (error) {
-    console.error("Failed to save features to IndexedDB:", error);
+    console.error("Failed to save session to IndexedDB:", error);
   }
 }
 
-async function loadFeaturesFromDB(): Promise<GeoJSONStoreFeatures[]> {
+async function loadSessionFromDB(): Promise<GeoJSONStoreFeatures[]> {
   try {
     const db = await openDB();
     const tx = db.transaction(STORE_NAME, "readonly");
@@ -144,8 +148,30 @@ async function loadFeaturesFromDB(): Promise<GeoJSONStoreFeatures[]> {
       };
     });
   } catch (error) {
-    console.error("Failed to load features from IndexedDB:", error);
+    console.error("Failed to load session from IndexedDB:", error);
     return [];
+  }
+}
+
+async function clearSessionFromDB(): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    store.clear();
+
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  } catch (error) {
+    console.error("Failed to clear session from IndexedDB:", error);
   }
 }
 
@@ -1613,6 +1639,7 @@ type DrawContextValue = {
   toggleMap: (mapId: string) => void;
   deleteMap: (mapId: string) => Promise<void>;
   refreshMaps: () => Promise<void>;
+  clearCanvas: () => Promise<void>;
 };
 
 const DrawContext = createContext<DrawContextValue | null>(null);
@@ -1697,10 +1724,10 @@ function MapDrawControl({
 
     draw.start();
 
-    // Auto-load features from IndexedDB on mount
+    // Auto-load session features from IndexedDB on mount
     if (!hasLoadedFromDB.current) {
       hasLoadedFromDB.current = true;
-      loadFeaturesFromDB().then((savedFeatures) => {
+      loadSessionFromDB().then((savedFeatures) => {
         if (savedFeatures.length > 0) {
           draw.addFeatures(savedFeatures);
         }
@@ -1711,8 +1738,8 @@ function MapDrawControl({
       const snapshot = draw.getSnapshot();
       setFeatures(snapshot);
       onFeaturesChange?.(snapshot);
-      // Auto-save to IndexedDB
-      saveFeaturesToDB(snapshot);
+      // Auto-save session to IndexedDB
+      saveSessionToDB(snapshot);
     });
 
     setTerraDraw(draw);
@@ -1807,6 +1834,21 @@ function MapDrawControl({
     [loadedMapIds, toggleMap, refreshMaps]
   );
 
+  const clearCanvas = useCallback(async () => {
+    if (!terraDraw) return;
+    // Remove all features from the canvas
+    const currentFeatures = terraDraw.getSnapshot();
+    if (currentFeatures.length > 0) {
+      const featureIds = currentFeatures.map((f) => f.id as string);
+      terraDraw.removeFeatures(featureIds);
+    }
+    // Clear the loaded map tracking
+    loadedMapFeaturesRef.current.clear();
+    setLoadedMapIds(new Set());
+    // Clear the session storage
+    await clearSessionFromDB();
+  }, [terraDraw]);
+
   const contextValue = useMemo(
     () => ({
       terraDraw,
@@ -1819,8 +1861,9 @@ function MapDrawControl({
       toggleMap,
       deleteMap,
       refreshMaps,
+      clearCanvas,
     }),
-    [terraDraw, activeMode, handleSetActiveMode, features, savedMaps, loadedMapIds, saveCurrentAsMap, toggleMap, deleteMap, refreshMaps]
+    [terraDraw, activeMode, handleSetActiveMode, features, savedMaps, loadedMapIds, saveCurrentAsMap, toggleMap, deleteMap, refreshMaps, clearCanvas]
   );
 
   return (
@@ -1988,7 +2031,7 @@ function MapDrawSelect() {
 }
 
 function MapDrawDelete() {
-  const { terraDraw, activeMode, setActiveMode, features } = useDrawContext();
+  const { terraDraw, activeMode, setActiveMode, features, clearCanvas } = useDrawContext();
   const hasFeatures = features.length > 0;
 
   // Check if we have selected features in select mode
@@ -2002,11 +2045,10 @@ function MapDrawDelete() {
     selectedFeatures.forEach((f) => terraDraw.removeFeatures([f.id as string]));
   }, [terraDraw, selectedFeatures]);
 
-  const handleClearAll = useCallback(() => {
-    if (!terraDraw) return;
-    terraDraw.clear();
+  const handleClearAll = useCallback(async () => {
+    await clearCanvas();
     setActiveMode(null);
-  }, [terraDraw, setActiveMode]);
+  }, [clearCanvas, setActiveMode]);
 
   // If in select mode with selected features, delete without confirmation
   if (hasSelection) {
