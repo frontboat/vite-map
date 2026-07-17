@@ -52,6 +52,7 @@ import {
 import { TerraDrawMapLibreGLAdapter } from "terra-draw-maplibre-gl-adapter";
 
 import { cn } from "@/lib/utils";
+import { useTimelineOptional } from "@/components/ui/map-timeline";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1627,11 +1628,33 @@ type DrawMode =
   | "select"
   | null;
 
+type FeatureId = string | number;
+
+/** Timeline step assigned to a feature via properties.step, or null when unassigned */
+function getFeatureStep(feature: GeoJSONStoreFeatures): number | null {
+  const step = feature.properties?.step;
+  return typeof step === "number" ? step : null;
+}
+
+function stripSelectedProperty(
+  feature: GeoJSONStoreFeatures
+): GeoJSONStoreFeatures {
+  const properties = { ...feature.properties };
+  delete properties.selected;
+  return { ...feature, properties } as GeoJSONStoreFeatures;
+}
+
 type DrawContextValue = {
   terraDraw: TerraDraw | null;
   activeMode: DrawMode;
   setActiveMode: (mode: DrawMode) => void;
   features: GeoJSONStoreFeatures[];
+  /** All features including ones currently hidden by the timeline */
+  allFeatures: GeoJSONStoreFeatures[];
+  /** Feature currently selected in select mode */
+  selectedFeatureId: FeatureId | null;
+  /** Assign or clear the timeline step of a feature */
+  setFeatureStep: (featureId: FeatureId, step: number | null) => void;
   // Multi-map support
   savedMaps: SavedMap[];
   loadedMapIds: Set<string>;
@@ -1670,9 +1693,14 @@ function MapDrawControl({
   children,
 }: MapDrawControlProps) {
   const { map, isLoaded } = useMap();
+  const timeline = useTimelineOptional();
   const [terraDraw, setTerraDraw] = useState<TerraDraw | null>(null);
   const [activeMode, setActiveMode] = useState<DrawMode>(null);
   const [features, setFeatures] = useState<GeoJSONStoreFeatures[]>([]);
+  const [selectedFeatureId, setSelectedFeatureId] = useState<FeatureId | null>(null);
+  // Features removed from terra draw because their step is beyond the current timeline step
+  const [hiddenFeatures, setHiddenFeatures] = useState<GeoJSONStoreFeatures[]>([]);
+  const hiddenFeaturesRef = useRef<GeoJSONStoreFeatures[]>([]);
   const hasLoadedFromDB = useRef(false);
 
   // Multi-map support
@@ -1738,15 +1766,19 @@ function MapDrawControl({
       const snapshot = draw.getSnapshot();
       setFeatures(snapshot);
       onFeaturesChange?.(snapshot);
-      // Auto-save session to IndexedDB
-      saveSessionToDB(snapshot);
+      // Auto-save session to IndexedDB, including features the timeline currently hides
+      saveSessionToDB([...snapshot, ...hiddenFeaturesRef.current]);
     });
+
+    draw.on("select", (id) => setSelectedFeatureId(id));
+    draw.on("deselect", () => setSelectedFeatureId(null));
 
     setTerraDraw(draw);
 
     return () => {
       draw.stop();
       setTerraDraw(null);
+      setSelectedFeatureId(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoaded, map]);
@@ -1766,6 +1798,188 @@ function MapDrawControl({
     [terraDraw, activeMode]
   );
 
+  // Timeline sync: hide features assigned to future steps, restore ones now due
+  const timelineStep = timeline?.step ?? null;
+  useEffect(() => {
+    if (!terraDraw || timelineStep === null) return;
+
+    const snapshot = terraDraw.getSnapshot();
+    const toHide = snapshot.filter((f) => {
+      const step = getFeatureStep(f);
+      return step !== null && step > timelineStep;
+    });
+    const toShow = hiddenFeaturesRef.current.filter((f) => {
+      const step = getFeatureStep(f);
+      return step === null || step <= timelineStep;
+    });
+
+    if (toHide.length === 0 && toShow.length === 0) return;
+
+    const showIds = new Set(toShow.map((f) => f.id));
+    const nextHidden = [
+      ...hiddenFeaturesRef.current.filter((f) => !showIds.has(f.id)),
+      ...toHide.map(stripSelectedProperty),
+    ];
+    // Update the ref before mutating terra draw so the change handler persists hidden features
+    hiddenFeaturesRef.current = nextHidden;
+
+    if (toHide.length > 0) {
+      toHide.forEach((f) => {
+        if (f.properties?.selected) {
+          terraDraw.deselectFeature(f.id as FeatureId);
+        }
+      });
+      terraDraw.removeFeatures(toHide.map((f) => f.id as FeatureId));
+    }
+    if (toShow.length > 0) {
+      terraDraw.addFeatures(toShow);
+    }
+    setHiddenFeatures(nextHidden);
+  }, [terraDraw, timelineStep, features, hiddenFeatures]);
+
+  const setFeatureStep = useCallback(
+    (featureId: FeatureId, step: number | null) => {
+      if (!terraDraw) return;
+
+      if (terraDraw.hasFeature(featureId)) {
+        // updateFeatureProperties makes terra draw drop the selection — restore it
+        const wasSelected =
+          terraDraw.getSnapshotFeature(featureId)?.properties?.selected === true;
+        terraDraw.updateFeatureProperties(featureId, { step });
+        if (wasSelected) {
+          terraDraw.selectFeature(featureId);
+        }
+        setFeatures(terraDraw.getSnapshot());
+        return;
+      }
+
+      // Feature is currently hidden by the timeline — update the stashed copy.
+      // No terra draw change event fires for it, so persist the session manually.
+      const hidden = hiddenFeaturesRef.current;
+      const index = hidden.findIndex((f) => f.id === featureId);
+      if (index === -1) return;
+      const properties = { ...hidden[index].properties };
+      if (step === null) {
+        delete properties.step;
+      } else {
+        properties.step = step;
+      }
+      const nextHidden = [...hidden];
+      nextHidden[index] = { ...hidden[index], properties } as GeoJSONStoreFeatures;
+      hiddenFeaturesRef.current = nextHidden;
+      setHiddenFeatures(nextHidden);
+      saveSessionToDB([...terraDraw.getSnapshot(), ...nextHidden]);
+    },
+    [terraDraw]
+  );
+
+  const removeFeature = useCallback(
+    (featureId: FeatureId) => {
+      if (!terraDraw) return;
+      if (terraDraw.hasFeature(featureId)) {
+        if (
+          terraDraw.getSnapshotFeature(featureId)?.properties?.selected === true
+        ) {
+          terraDraw.deselectFeature(featureId);
+        }
+        terraDraw.removeFeatures([featureId]);
+        return;
+      }
+      // Feature is hidden by the timeline — drop it from the stash and persist
+      const nextHidden = hiddenFeaturesRef.current.filter(
+        (f) => f.id !== featureId
+      );
+      if (nextHidden.length === hiddenFeaturesRef.current.length) return;
+      hiddenFeaturesRef.current = nextHidden;
+      setHiddenFeatures(nextHidden);
+      saveSessionToDB([...terraDraw.getSnapshot(), ...nextHidden]);
+    },
+    [terraDraw]
+  );
+
+  const allFeatures = useMemo(
+    () => [...features, ...hiddenFeatures],
+    [features, hiddenFeatures]
+  );
+
+  // Register drawn features as timeline items (labels numbered by creation order)
+  const registerItems = timeline?.registerItems;
+  const timelineItems = useMemo(() => {
+    const labels: Record<string, string> = {
+      point: "Point",
+      linestring: "Line",
+      polygon: "Polygon",
+      rectangle: "Rectangle",
+      circle: "Circle",
+      freehand: "Freehand",
+    };
+    const counts: Record<string, number> = {};
+    return [...allFeatures]
+      .sort(
+        (a, b) =>
+          ((a.properties?.createdAt as number) ?? 0) -
+          ((b.properties?.createdAt as number) ?? 0)
+      )
+      .map((feature) => {
+        const mode = (feature.properties?.mode as string) ?? "shape";
+        counts[mode] = (counts[mode] ?? 0) + 1;
+        return {
+          id: String(feature.id),
+          label: `${labels[mode] ?? mode} ${counts[mode]}`,
+          kind: mode,
+          step: getFeatureStep(feature),
+          setStep: (step: number | null) =>
+            setFeatureStep(feature.id as FeatureId, step),
+          remove: () => removeFeature(feature.id as FeatureId),
+        };
+      });
+  }, [allFeatures, setFeatureStep, removeFeature]);
+
+  useEffect(() => {
+    if (!registerItems) return;
+    registerItems("draw", timelineItems);
+  }, [registerItems, timelineItems]);
+
+  // Unregister only on real unmount — a cleanup on the effect above would briefly
+  // register an empty list on every change and clamp the current timeline step
+  useEffect(() => {
+    if (!registerItems) return;
+    return () => registerItems("draw", []);
+  }, [registerItems]);
+
+  // Deck export/import: replace-all semantics (fresh feature ids on import)
+  const allFeaturesRef = useRef(allFeatures);
+  useEffect(() => {
+    allFeaturesRef.current = allFeatures;
+  }, [allFeatures]);
+
+  const registerPersistence = timeline?.registerPersistence;
+  useEffect(() => {
+    if (!registerPersistence || !terraDraw) return;
+    registerPersistence("draw", {
+      exportData: () => allFeaturesRef.current.map(stripSelectedProperty),
+      importData: (data) => {
+        if (!Array.isArray(data)) return;
+        hiddenFeaturesRef.current = [];
+        setHiddenFeatures([]);
+        loadedMapFeaturesRef.current.clear();
+        setLoadedMapIds(new Set());
+        const current = terraDraw.getSnapshot();
+        if (current.length > 0) {
+          terraDraw.removeFeatures(current.map((f) => f.id as FeatureId));
+        }
+        const imported = (data as GeoJSONStoreFeatures[]).map((f) =>
+          stripSelectedProperty({ ...f, id: crypto.randomUUID() })
+        );
+        if (imported.length > 0) {
+          terraDraw.addFeatures(imported);
+        }
+        setFeatures(terraDraw.getSnapshot());
+      },
+    });
+    return () => registerPersistence("draw", null);
+  }, [registerPersistence, terraDraw]);
+
   const refreshMaps = useCallback(async () => {
     const maps = await getAllMapsFromDB();
     setSavedMaps(maps);
@@ -1773,11 +1987,11 @@ function MapDrawControl({
 
   const saveCurrentAsMap = useCallback(
     async (name: string) => {
-      if (!terraDraw || features.length === 0) return;
-      await saveMapToDB(name, features);
+      if (!terraDraw || allFeatures.length === 0) return;
+      await saveMapToDB(name, allFeatures);
       await refreshMaps();
     },
-    [terraDraw, features, refreshMaps]
+    [terraDraw, allFeatures, refreshMaps]
   );
 
   const toggleMap = useCallback(
@@ -1787,10 +2001,18 @@ function MapDrawControl({
       const isCurrentlyLoaded = loadedMapIds.has(mapId);
 
       if (isCurrentlyLoaded) {
-        // Remove the map's features
+        // Remove the map's features (including any the timeline currently hides)
         const featureIds = loadedMapFeaturesRef.current.get(mapId) || [];
         if (featureIds.length > 0) {
-          terraDraw.removeFeatures(featureIds);
+          const idSet = new Set<FeatureId>(featureIds);
+          hiddenFeaturesRef.current = hiddenFeaturesRef.current.filter(
+            (f) => !idSet.has(f.id as FeatureId)
+          );
+          setHiddenFeatures(hiddenFeaturesRef.current);
+          const presentIds = featureIds.filter((id) => terraDraw.hasFeature(id));
+          if (presentIds.length > 0) {
+            terraDraw.removeFeatures(presentIds);
+          }
         }
         loadedMapFeaturesRef.current.delete(mapId);
         setLoadedMapIds((prev) => {
@@ -1836,6 +2058,9 @@ function MapDrawControl({
 
   const clearCanvas = useCallback(async () => {
     if (!terraDraw) return;
+    // Drop features hidden by the timeline first so the change handler doesn't re-save them
+    hiddenFeaturesRef.current = [];
+    setHiddenFeatures([]);
     // Remove all features from the canvas
     const currentFeatures = terraDraw.getSnapshot();
     if (currentFeatures.length > 0) {
@@ -1855,6 +2080,9 @@ function MapDrawControl({
       activeMode,
       setActiveMode: handleSetActiveMode,
       features,
+      allFeatures,
+      selectedFeatureId,
+      setFeatureStep,
       savedMaps,
       loadedMapIds,
       saveCurrentAsMap,
@@ -1863,7 +2091,7 @@ function MapDrawControl({
       refreshMaps,
       clearCanvas,
     }),
-    [terraDraw, activeMode, handleSetActiveMode, features, savedMaps, loadedMapIds, saveCurrentAsMap, toggleMap, deleteMap, refreshMaps, clearCanvas]
+    [terraDraw, activeMode, handleSetActiveMode, features, allFeatures, selectedFeatureId, setFeatureStep, savedMaps, loadedMapIds, saveCurrentAsMap, toggleMap, deleteMap, refreshMaps, clearCanvas]
   );
 
   return (
@@ -2104,7 +2332,7 @@ function MapDrawDelete() {
 }
 
 function MapDrawDownload() {
-  const { features } = useDrawContext();
+  const { allFeatures: features } = useDrawContext();
   const hasFeatures = features.length > 0;
 
   const handleDownload = useCallback(() => {
@@ -2385,6 +2613,83 @@ function MapDrawMapManager() {
   );
 }
 
+type MapDrawStepperProps = {
+  /** Additional CSS classes */
+  className?: string;
+};
+
+/**
+ * Assigns a timeline step to the feature currently selected in select mode.
+ * Renders nothing without a selection or outside a MapTimeline.
+ */
+function MapDrawStepper({ className }: MapDrawStepperProps) {
+  const { features, selectedFeatureId, setFeatureStep } = useDrawContext();
+  const timeline = useTimelineOptional();
+
+  if (!timeline || selectedFeatureId === null) return null;
+
+  const feature = features.find((f) => f.id === selectedFeatureId);
+  if (!feature) return null;
+
+  const step = getFeatureStep(feature);
+
+  const assign = (next: number | null) => {
+    setFeatureStep(selectedFeatureId, next);
+    // Advance the timeline so the feature never vanishes the moment it's assigned
+    if (next !== null && next > timeline.step) {
+      timeline.setStep(next);
+    }
+  };
+
+  return (
+    <ControlGroup>
+      <div className={cn("flex items-center h-8", className)}>
+        <span className="px-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground select-none">
+          Step
+        </span>
+        <button
+          onClick={() => {
+            if (step !== null && step > 1) assign(step - 1);
+          }}
+          aria-label="Decrease step"
+          type="button"
+          disabled={step === null || step <= 1}
+          className={cn(
+            "flex items-center justify-center size-8 hover:bg-accent dark:hover:bg-accent/40 transition-colors",
+            (step === null || step <= 1) &&
+              "opacity-50 pointer-events-none cursor-not-allowed"
+          )}
+        >
+          <Minus className="size-3" />
+        </button>
+        <span className="w-6 text-center text-xs font-medium tabular-nums select-none">
+          {step ?? "—"}
+        </span>
+        <button
+          onClick={() => assign(step === null ? Math.max(1, timeline.step + 1) : step + 1)}
+          aria-label="Increase step"
+          type="button"
+          className="flex items-center justify-center size-8 hover:bg-accent dark:hover:bg-accent/40 transition-colors"
+        >
+          <Plus className="size-3" />
+        </button>
+        <button
+          onClick={() => assign(null)}
+          aria-label="Clear step"
+          type="button"
+          disabled={step === null}
+          className={cn(
+            "flex items-center justify-center size-8 hover:bg-accent dark:hover:bg-accent/40 transition-colors",
+            step === null && "opacity-50 pointer-events-none cursor-not-allowed"
+          )}
+        >
+          <X className="size-3" />
+        </button>
+      </div>
+    </ControlGroup>
+  );
+}
+
 export {
   Map,
   useMap,
@@ -2412,7 +2717,8 @@ export {
   MapDrawDownload,
   MapDrawImport,
   MapDrawMapManager,
+  MapDrawStepper,
   useDrawContext,
 };
 
-export type { MapRef, DrawMode };
+export type { MapRef, DrawMode, FeatureId };
